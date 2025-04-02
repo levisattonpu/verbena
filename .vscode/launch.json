@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Debug Script",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py", // Path to your script
+            "console": "integratedTerminal",
+            
+        }
+    ]
+}
