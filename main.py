@@ -3,84 +3,133 @@ from requests.auth import HTTPBasicAuth
 import os
 import csv
 import logging
+from typing import List, Dict, Optional, Union
+from dataclasses import dataclass
+
+
+@dataclass
+class MeasurementConfig:
+    subdomain: str = os.getenv("SUBDOMAIN", "")
+    user: str = os.getenv("USER", "")
+    password: str = os.getenv("PASSWORD", "")
+
+
+class APIError(Exception):
+    """Custom exception for API errors"""
+    pass
 
 
 class Measurement:
-    def __init__(self):
-        self.base_url = f"https://api.sienge.com.br/{os.getenv("SUBDOMAIN")}/public/api/v1/"
-        self.session = requests.Session()
-        self.session.auth = HTTPBasicAuth(os.getenv("USER"), os.getenv("PASSWORD"))
+    def __init__(self, config: MeasurementConfig = None):
+        self.config = config or MeasurementConfig()
+        self.base_url = f"https://api.sienge.com.br/{self.config.subdomain}/public/api/v1/"
+        self.session = self._create_session()
+        self.logger = logging.getLogger(__name__)
 
-    def get_building_id_and_measurements(self, params: dict = None):
-        building_url = f"{self.base_url}building-projects/progress-logs"
-        response = self.session.get(url=building_url, params=params)
+    def _create_session(self) -> requests.Session:
+        """Create and configure requests session"""
+        session = requests.Session()
+        session.auth = HTTPBasicAuth(self.config.user, self.config.password)
+        session.headers.update({
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        })
+        return session
 
-        logging.info(f"Response status code: {response.status_code}")
-        logging.debug(f"Response content: {response.content}")
-        if response.status_code == 200:
-            try:
-                data = response.json()
-            except ValueError:
-                print("Error: Response is not valid JSON.")
-                return []
-        else:
-            print(f"Error: Received status code {response.status_code}")
+    def _make_request(self, url: str, params: Optional[dict] = None) -> Union[dict, list]:
+        """Generic request handler with error handling"""
+        try:
+            response = self.session.get(url, params=params)
+            self.logger.debug(f"Request to {url} - Status: {response.status_code}")
+            
+            if response.status_code != 200:
+                self.logger.error(f"API request failed. Status: {response.status_code}, Response: {response.text}")
+                raise APIError(f"API request failed with status {response.status_code}")
+
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Request failed: {str(e)}")
+            raise APIError(f"Request failed: {str(e)}")
+        except ValueError as e:
+            self.logger.error(f"Invalid JSON response: {str(e)}")
+            raise APIError("Invalid JSON response")
+
+    def get_building_projects(self, params: Optional[dict] = None) -> List[Dict]:
+        """Get all building projects with their measurements"""
+        url = f"{self.base_url}building-projects/progress-logs"
+        try:
+            data = self._make_request(url, params)
+            return data.get('results', [])
+        except APIError:
             return []
 
-        return [[item['buildingId'], item['measurementNumber']] for item in data['results']]
+    def get_building_units(self, building_id: str, measurement_number: str) -> List[Dict]:
+        """Get units for a specific building project and measurement"""
+        url = f"{self.base_url}building-projects/{building_id}/progress-logs/{measurement_number}"
+        try:
+            data = self._make_request(url)
+            return data.get('buildingUnits', [])
+        except APIError:
+            return []
 
-    def get_building_unit_id(self, params: dict = None):
-        building_data = self.get_building_id_and_measurements()
-        data = []
+    def get_measurement_records(self, building_id: str, measurement_number: str, building_unit_id: str) -> List[Dict]:
+        """Get measurement records for a specific building unit"""
+        url = f"{self.base_url}building-projects/{building_id}/progress-logs/{measurement_number}/items/{building_unit_id}"
+        try:
+            data = self._make_request(url)
+            return data.get('results', [])
+        except APIError:
+            return []
 
-        for buildingId, measurementNumber in building_data:
-            measurement_url = f"{self.base_url}building-projects/{buildingId}/progress-logs/{measurementNumber}"
-            response = self.session.get(url=measurement_url, params=params)  
-            if response.status_code == 200:
-                try:
-                    for buildingUnitId in response.json()["buildingUnits"]:
-                        data.append([buildingId, measurementNumber, buildingUnitId['id']])
-                except ValueError:
-                    print(f"Error: Response for buildingId {buildingId} and measurementNumber {measurementNumber} is not valid JSON.")
-            elif response.status_code == 404:
-                data.append([0])
-            else:
-                print(f"Error: Received status code {response.status_code} for buildingId {buildingId} and measurementNumber {measurementNumber}")
-            print(f"Response status code: {response.status_code}")
-        return data
+    def export_all_measurements_to_csv(self, output_file: str = "measurements.csv", params: Optional[dict] = None) -> bool:
+        """Main method to export all measurements data to CSV"""
+        try:
+            with open(output_file, "w", newline="", encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=[
+                    "taskId", "presentationId", "summary", "description",
+                    "unitOfMeasure", "plannedQuantity", "measuredQuantity", 
+                    "unitPrice", "cumulativeMeasuredQuantity", 
+                    "cumulativePercentage", "measureBalance"
+                ])
+                writer.writeheader()
 
-
-    def get_measurement_records(self,params: dict = None):
-        records = self.get_building_unit_id()
-        response_data = []
-        for record in records:
-            if len(record) == 3:
-                building_id, measurement_number, building_unit_id = record
-                records_url = f"{self.base_url}building-projects/{building_id}/progress-logs/{measurement_number}/items/{building_unit_id}"
-                response = self.session.get(url=records_url, params=params)
-                response_data.append(response.json())
-                print(f"Response status code: {response.status_code}")
-        return self.to_csv(response_data)
-
-
-    def to_csv(self, csv_data):
-        with open("output.csv", "w", newline="") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(["taskId", "presentationId", "summary", "description",
-                             "unitOfMeasure", "plannedQuantity", "measuredQuantity", "unitPrice",
-                             "cumulativeMeasuredQuantity", "cumulativePercentage", "measureBalance"])
-            for data in csv_data:
-                for key, value in data.items():
-                    if key == "results":
-                        for r in value:
-                            if type(r) == dict and r['taskId'] != 'next':
-                                writer.writerow(r.values())
+                buildings = self.get_building_projects(params)
+                for building in buildings:
+                    building_id = building.get('buildingId')
+                    measurement_number = building.get('measurementNumber')
+                    
+                    units = self.get_building_units(building_id, measurement_number)
+                    for unit in units:
+                        unit_id = unit.get('id')
+                        records = self.get_measurement_records(building_id, measurement_number, unit_id)
+                        
+                        for record in records:
+                            if isinstance(record, dict) and record.get('taskId') != 'next':
+                                writer.writerow(record)
+            
+            self.logger.info(f"Successfully exported data to {output_file}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to export data: {str(e)}")
+            return False
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    initiate = Measurement()
-    data = initiate.get_measurement_records()
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('measurement_export.log')
+        ]
+    )
 
-
-
+    try:
+        measurement = Measurement()
+        success = measurement.export_all_measurements_to_csv()
+        if not success:
+            logging.error("Measurement export failed")
+            exit(1)
+    except Exception as e:
+        logging.critical(f"Application failed: {str(e)}")
+        exit(1)
