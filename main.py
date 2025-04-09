@@ -54,7 +54,7 @@ class Measurement:
         records = self.get_building_unit_id()
         response_data = []
         for record in records:
-            if len(record) == 3:  # Check if the sublist has exactly 3 elements
+            if len(record) == 3:
                 building_id, measurement_number, building_unit_id = record
                 records_url = f"{self.base_url}building-projects/{building_id}/progress-logs/{measurement_number}/items/{building_unit_id}"
                 response = self.session.get(url=records_url, params=params)
@@ -70,10 +70,11 @@ class Measurement:
                              "unitOfMeasure", "plannedQuantity", "measuredQuantity", "unitPrice",
                              "cumulativeMeasuredQuantity", "cumulativePercentage", "measureBalance"])
             for data in csv_data:
-                for metadata, results in data.items():
-                    for r in results:
-                        if type(r) == dict:
-                            writer.writerow(r.values())
+                for key, value in data.items():
+                    if key == "results":
+                        for r in value:
+                            if type(r) == dict and r['taskId'] != 'next':
+                                writer.writerow(r.values())
 
 
 if __name__ == "__main__":
